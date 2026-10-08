@@ -1,10 +1,12 @@
-import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray, utilityProcess } from 'electron';
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron';
 import type { IPCArgs, IPCChannel, IPCResult } from './ipc-contract';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { RecordStore } from './records';
+import { OfflineDictionary, dictionaryText, usesDictionary } from './dictionary';
+import { CustomDictionaries } from './custom-dictionaries';
 import { AppLogger, errorCode } from './logger';
 import { runtimePaths } from './runtime-paths';
 import { isAppPage } from './ipc-origin';
@@ -17,6 +19,7 @@ import { runPackageCheck } from './package-check';
 declare const GLINT_TEST_BUILD: boolean;
 declare const GLINT_ASSET_DIR: string | undefined;
 const assets = GLINT_ASSET_DIR ?? __dirname;
+const dictionary = new OfflineDictionary(path.join(app.isPackaged ? process.resourcesPath : assets, 'dictionary', 'ecdict.sqlite'));
 const packageCheck = process.argv.includes('--package-check');
 const smoke = (GLINT_TEST_BUILD && process.argv.includes('--smoke')) || packageCheck;
 const platform = desktopPlatform(process.platform, process.env);
@@ -53,6 +56,7 @@ const configPath = path.join(app.getPath('userData'), 'settings.json');
 const paths = runtimePaths(testRoot, process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'), smoke,
   process.platform === 'linux' ? { home: app.getPath('home'), env: process.env } : undefined);
 const recordsFolder = paths.data;
+const customDictionaries = new CustomDictionaries(path.join(paths.data, 'dictionaries'), path.join(assets, 'dictionary-worker.cjs'));
 let logger: AppLogger | undefined;
 const recordPath = (kind: RecordKind) => path.join(recordsFolder, recordFilename(kind));
 const recordStores = new Map<RecordKind, RecordStore>();
@@ -88,12 +92,14 @@ let waylandTrigger: Settings['trigger'] | undefined;
 let encryptedKey = '';
 let setup: BrowserWindow | undefined;
 let toolbar: BrowserWindow | undefined;
+let toolbarPaintReady: Promise<void> | undefined;
 let resultWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let host: UtilityProcess | undefined;
 let quitting = false;
 let selection: Selection | undefined;
 let toolbarSelectionId: number | undefined;
+let toolbarLayout = 0;
 let result: ResultState | undefined;
 let resultPrompt: string | undefined;
 let serial = 0;
@@ -166,9 +172,33 @@ function openSettings() {
 }
 async function getToolbar() {
   if (toolbar && !toolbar.isDestroyed()) return toolbar;
-  const win = new BrowserWindow({ width: 440, height: 60, show: false, frame: false, transparent: true, resizable: false, focusable: false, alwaysOnTop: true, skipTaskbar: true, hasShadow: false, webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  // showInactive preserves source focus on appearance. On Windows the toolbar
+  // must still permit mouse activation, or Chromium can discard the first press
+  // of an unfocusable window and deliver only mouseUp (no button click).
+  const win = new BrowserWindow({ width: 440, height: 60, show: false, frame: false, transparent: true, backgroundColor: '#00000000', resizable: false, focusable: process.platform === 'win32', alwaysOnTop: true, skipTaskbar: true, hasShadow: false, webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } });
+  // loadFile and renderer RAF callbacks can finish before the first compositor
+  // frame. Gate the first presentation on Electron's native paint notification.
+  toolbarPaintReady = new Promise<void>(resolve => {
+    win.once('ready-to-show', resolve);
+    win.once('closed', resolve);
+  });
   secureWindow(win);
+  win.setAlwaysOnTop(true, 'screen-saver');
   toolbar = win;
+  let shownSelectionId: number | undefined;
+  win.on('show', () => {
+    shownSelectionId = toolbarSelectionId;
+    logger?.write('toolbar.shown', { selectionId: shownSelectionId });
+  });
+  win.on('hide', () => logger?.write('toolbar.hidden', { selectionId: shownSelectionId }));
+  win.on('resize', () => {
+    const { width, height } = win.getContentBounds();
+    logger?.write('toolbar.resized', { selectionId: toolbarSelectionId, width, height });
+  });
+  win.webContents.on('before-mouse-event', (_event, mouse) => {
+    if (mouse.type === 'mouseDown' || mouse.type === 'mouseUp')
+      logger?.write('toolbar.pointer', { selectionId: toolbarSelectionId, code: mouse.type === 'mouseDown' ? 'DOWN' : 'UP' });
+  });
   await win.loadFile(page, { query: { view: 'toolbar' } });
   return win;
 }
@@ -194,7 +224,11 @@ function showDemo() {
   const zero = { x: 0, y: 0 };
   return showSelection({ text: 'Good tools stay out of your way. Great tools make the next step feel effortless.', programName: 'Glint 体验区', method: 1, posLevel: 0, startTop: zero, startBottom: zero, endTop: zero, endBottom: zero, mousePosStart: zero, mousePosEnd: zero }, true);
 }
-function dismissToolbar() { toolbarSelectionId = undefined; toolbar?.hide(); }
+function dismissToolbar(reason = 'DISMISS') {
+  if (toolbar?.isVisible()) logger?.write('toolbar.dismissed', { selectionId: toolbarSelectionId, code: reason });
+  toolbarSelectionId = undefined; ++toolbarLayout;
+  if (toolbar?.isVisible()) toolbar.hide();
+}
 function configureHost() { host?.postMessage({ type: 'configure', settings, testing: smoke }); }
 function startHost() {
   clearTimeout(captureTimer); capturePending = false;
@@ -220,12 +254,12 @@ function startHost() {
       clearTimeout(captureTimer); capturePending = false;
       if (message.data) void showSelection(message.data).catch(error => diagnose(String(error)));
       else diagnose(process.platform === 'linux' ? '未读取到 PRIMARY 选区：请确认应用提供选区，且合成器支持 data-control。' : '未读取到选中文字：请检查应用排除规则，或为需要的场景开启复制取词。');
-    } else if (message.type === 'dismiss') dismissToolbar();
+    } else if (message.type === 'dismiss') dismissToolbar('NATIVE_DISMISS');
     else if (message.type === 'mouse-down' && toolbar?.isVisible()) {
       if (!validScreenPoint(message.data)) return;
       const point = process.platform === 'win32' || process.platform === 'linux' ? screen.screenToDipPoint(message.data) : message.data;
       const rect = toolbar.getBounds();
-      if (point.x < rect.x || point.x > rect.x + rect.width || point.y < rect.y || point.y > rect.y + rect.height) dismissToolbar();
+      if (point.x < rect.x || point.x > rect.x + rect.width || point.y < rect.y || point.y > rect.y + rect.height) dismissToolbar('OUTSIDE_PRESS');
     }
   });
   child.on('exit', code => {
@@ -283,9 +317,22 @@ async function runAction(actionId: unknown) {
   const state: ResultState = { id: randomUUID(), recorded: false, recordKind: recordKind(action), actionName: action.name, actionIcon: action.icon, source: captured.text, text: '', app: captured.app, busy: true, demo: captured.demo };
   result = state;
   resultPrompt = action.prompt;
+  // Resolve before loading a new renderer so its initial snapshot includes fast offline results.
+  if (usesDictionary(action, settings.dictionaryEnabled)) {
+    try {
+      let entry;
+      try { entry = await customDictionaries.lookup(captured.text); } catch { logger?.write('dictionary.custom-unavailable'); }
+      entry ??= dictionary.lookup(captured.text);
+      if (entry) {
+        state.dictionary = entry; state.text = dictionaryText(entry); state.busy = false;
+      }
+    } catch { logger?.write('dictionary.unavailable'); }
+  }
+  if (abort !== controller) return;
   const win = await getResultWindow(captured);
   if (abort !== controller) return;
   broadcast(); win.show();
+  if (state.dictionary) { abort = undefined; return; }
   void generate(action.prompt, captured.text, state, controller);
 }
 async function generate(prompt: string, text: string, state: ResultState, controller: AbortController) {
@@ -346,6 +393,24 @@ function installIPC() {
       // IPC is an untrusted runtime boundary. Each handler still validates its inputs.
       return fn(event, ...args as IPCArgs<K>);
     });
+  const dictionaryGuard = (event: IpcMainInvokeEvent) => {
+    if (event.sender !== setup?.webContents) throw new Error('Settings window only');
+  };
+  handle('list-dictionaries', event => { dictionaryGuard(event); return customDictionaries.list(); });
+  let importingDictionary = false;
+  handle('import-dictionary', async event => {
+    dictionaryGuard(event);
+    if (importingDictionary) return { ok: false, error: '正在导入词典，请稍候。' };
+    importingDictionary = true;
+    try {
+      const chosen = await dialog.showOpenDialog(setup!, { title: '导入 MDX 词典', filters: [{ name: 'MDict 词典', extensions: ['mdx'] }], properties: ['openFile'] });
+      if (chosen.canceled || !chosen.filePaths[0]) return { ok: true, cancelled: true };
+      await customDictionaries.importFile(chosen.filePaths[0]);
+      return { ok: true };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '词典导入失败。' }; }
+    finally { importingDictionary = false; }
+  });
+  handle('change-dictionary', async (event, id, action) => { dictionaryGuard(event); await customDictionaries.change(id, action); });
   const historyStore = (event: IpcMainInvokeEvent, kind: unknown) => {
     if (event.sender !== setup?.webContents) throw new Error('Settings window only');
     if (typeof kind !== 'string' || !settings.actions.some(action => recordKind(action) === kind)) throw new Error('记录类型无效。');
@@ -414,17 +479,36 @@ function installIPC() {
     const area = screen.getDisplayNearestPoint(selection).workArea;
     const width = Math.min(740, area.width - 16, Math.max(160, Math.ceil(measuredWidth)));
     const height = Math.min(120, Math.max(56, Math.ceil(measuredHeight)));
-    toolbar.setBounds({ ...placeToolbar(selection, area, width, height), width, height });
-    toolbar.showInactive();
-    toolbar.setAlwaysOnTop(true, 'screen-saver');
+    const next = { ...placeToolbar(selection, area, width, height), width, height };
+    const previous = toolbar.getBounds();
+    if (previous.x !== next.x || previous.y !== next.y || previous.width !== width || previous.height !== height) {
+      logger?.write('toolbar.layout', { selectionId: id, width, height, code: toolbar.isVisible() ? 'VISIBLE' : 'HIDDEN' });
+      toolbar.setBounds(next);
+    }
+    // Windows can clamp/adjust native bounds when changing display scale. The
+    // renderer must acknowledge the actual client size, not the requested size.
+    const viewport = toolbar.getContentBounds();
+    return { token: ++toolbarLayout, width: viewport.width, height: viewport.height };
+  });
+  handle('reveal-toolbar', async (event, id, layout) => {
+    const win = toolbar;
+    if (!win || event.sender !== win.webContents) return;
+    await toolbarPaintReady;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents || id !== toolbarSelectionId
+      || id !== selection?.id || !Number.isSafeInteger(layout) || layout !== toolbarLayout || quitting) return;
+    // The target viewport has painted two stable frames. Do not use capturePage as a
+    // paint barrier: hidden surfaces on another display can fail/hang GPU readback.
+    if (!win.isVisible()) win.showInactive();
   });
   handle('run', async (event, id, selectionId) => {
     if (event.sender !== toolbar?.webContents || !toolbar.isVisible() || !Number.isSafeInteger(selectionId)
       || selectionId !== toolbarSelectionId || selectionId !== selection?.id) {
+      logger?.write('toolbar.action-rejected', { selectionId: Number.isSafeInteger(selectionId) ? selectionId : undefined, code: event.sender !== toolbar?.webContents ? 'SENDER' : !toolbar.isVisible() ? 'HIDDEN' : 'STALE_SELECTION' });
       return { ok: false, error: '选区已更新或浮条已关闭，请重新划词。' };
     }
+    logger?.write('toolbar.action-requested', { selectionId });
     try { await runAction(id); return { ok: true }; }
-    catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作失败。' }; }
+    catch (error) { logger?.write('toolbar.action-failed', { selectionId, code: errorCode(error) }); return { ok: false, error: error instanceof Error ? error.message : '操作失败。' }; }
   });
   handle('settings', () => { dismissToolbar(); openSettings(); });
   handle('settings-window', (event, action) => {
@@ -440,7 +524,7 @@ function installIPC() {
     if (event.sender !== resultWindow?.webContents) throw new Error('Result window only');
     if (!result || result.busy || resultPrompt === undefined) return;
     const controller = new AbortController(); abort = controller;
-    const state: ResultState = { ...result, text: '', error: undefined, busy: true, recorded: false };
+    const state: ResultState = { ...result, dictionary: undefined, text: '', error: undefined, busy: true, recorded: false };
     result = state;
     emit({ type: 'result', result: state });
     void generate(resultPrompt, state.source, state, controller);
@@ -475,7 +559,7 @@ else {
   if (logger && !logger.write('app.started', { version: app.getVersion() })) console.error('Glint 无法写入运行日志。');
   app.on('second-instance', openSettings);
   app.on('window-all-closed', () => {});
-  app.on('before-quit', () => { quitting = true; abort?.abort(); clearTimeout(captureTimer); globalShortcut.unregisterAll(); host?.kill(); });
+  app.on('before-quit', () => { quitting = true; abort?.abort(); dictionary.close(); void customDictionaries.close(); clearTimeout(captureTimer); globalShortcut.unregisterAll(); host?.kill(); });
   app.on('will-quit', () => { closeRecordStores(); logger?.write('app.stopped'); });
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
@@ -508,6 +592,8 @@ else {
 // Internal runtime seam for startup probes and the separately built test runner.
 function applicationRuntime() {
   return {
+    get dictionary() { return dictionary; },
+    get customDictionaries() { return customDictionaries; },
     get platform() { return platform; },
     get broadcast() { return broadcast; },
     get capturePending() { return capturePending; },

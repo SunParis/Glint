@@ -162,6 +162,7 @@ test('Windows keeps direct copy, fallback, exclusions and compatibility tuning',
     configureSelectionHook(hook, constants, { ...defaults, selectionMethod: method }, 'windows', 'glint.exe');
     assert.deepEqual(calls.find(call => call.name === 'clipboardOnly')?.args, [method === 'clipboard']);
     assert.equal(calls.filter(call => call.name === 'fineTune').length, 2);
+    assert.ok((calls.find(call => call.name === 'fineTune' && call.args[0] === 0)?.args[1] as string[]).includes('zotero.exe'), 'PDF custom cursors stay compatible with automatic copy');
     assert.ok(calls.some(call => call.name === (method === 'accessibility' ? 'disableClipboard' : 'enableClipboard')));
     assert.deepEqual(calls.find(call => call.name === 'filter')?.args, [2, [...defaults.excludedApps, 'glint.exe']]);
   }

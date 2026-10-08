@@ -25,7 +25,7 @@ npm run package:verify-installer
 
 `npm run verify:release` 串行执行代码检查、完整 smoke、构建和打包启动验证；安装与卸载验证仍需在没有安装 Glint 的干净 Windows 账户中单独运行。
 
-`smoke` 使用单独编译到 `work/` 的测试入口，依次运行设置界面、记录与本地模型、原生取词三组测试。每组使用独立临时配置和数据库；某组失败不会阻止其余组执行，任一组失败则整体失败。也可分别运行 `smoke:ui`、`smoke:records`、`smoke:native`。结果及测试目录见 `work/smoke-summary.json`。系统取词测试需要交互式 Windows 桌面。
+`smoke` 使用单独编译到 `work/` 的测试入口，依次运行设置界面、浮条、记录与本地模型、词典、原生取词五组测试。每组使用独立临时配置和数据库；某组失败不会阻止其余组执行，任一组失败则整体失败。也可分别运行 `node scripts/smoke.mjs <ui|toolbar|records|dictionary|native>`（先构建）。结果及测试目录见 `work/smoke-summary.json`。完整界面和原生取词测试需要不受鼠标、焦点操作干扰的交互式 Windows 桌面。
 
 `package:verify` 检查归档、原生模块和许可，并分别启动应用与 portable，确认引擎、preload 接口及 SQLite 可用。正式包只保留最小启动自检，不携带完整测试场景；原先的 `smoke:packaged` 已由开发测试和打包自检分别替代。打包启动验证不能替代完整 smoke 或第三方应用的手动兼容性检查。
 

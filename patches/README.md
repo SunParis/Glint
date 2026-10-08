@@ -13,6 +13,15 @@ the result, rejects pre-existing clipboard changes in explicit copy mode, and
 restores an originally empty clipboard. It reuses the upstream clipboard format
 backup, copy shortcuts, polling, and cancellation machinery.
 
+Automatic forced-copy capture still rejects crosshair/custom drawing and screenshot
+cursors, with explicit custom-cursor exceptions for PDF readers including Zotero.
+`native/clipboard-capture.*` keeps the initial backup read-only: it no longer clears
+the clipboard before sending copy. Only new text owned by the source process can
+be restored, and image/file payloads are never claimed. The sequence check and
+restoration share a single clipboard lock, so a later screenshot or manual copy
+wins. Failed/aborted copies do not overwrite the clipboard. History deletion uses
+the matched history ID without holding the system clipboard across the WinRT call.
+
 Glint's `native/clipboard-history.*` helper uses the Windows history API to attempt
 removal of a temporary copy. It excludes pre-existing IDs, matches exact text
 within the capture time window, and stops when the clipboard changes or more
@@ -26,6 +35,10 @@ Run `npm run test:clipboard-history` for policy and Windows API checks. The live
 test skips when history is disabled or near capacity, without changing the user's
 preferences or evicting existing entries. It deletes only its own generated test
 records and restores the clipboard. Regular Electron smoke checks capture behavior.
+Use `npm run test:clipboard-history -- -CaptureOnly` for deterministic capture,
+image/file race, restoration and cursor tests without touching the system clipboard.
+`-CaptureLive` also checks real Windows text/image restoration and screenshot races
+using history-excluded fixtures, then restores the original clipboard if unchanged.
 
 `npm ci` applies and compiles the patch using Python and Visual Studio C++ tools.
 The native module and history tests use C++20 so C++/WinRT uses standard coroutines,

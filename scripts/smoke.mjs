@@ -6,8 +6,8 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const scenarios = process.argv.slice(2);
-if (!scenarios.length) scenarios.push('ui', 'records', 'native');
-if (scenarios.some(value => !['ui', 'records', 'native'].includes(value))) throw new Error('Expected ui, records or native');
+if (!scenarios.length) scenarios.push('ui', 'toolbar', 'records', 'dictionary', 'native');
+if (scenarios.some(value => !['ui', 'toolbar', 'records', 'dictionary', 'native'].includes(value))) throw new Error('Expected ui, toolbar, records, dictionary or native');
 if (process.platform === 'linux' && scenarios.includes('native') && process.env.GLINT_TEST_DESKTOP !== '1') {
   throw new Error('Linux native smoke changes PRIMARY. Run in a disposable desktop or nested compositor with GLINT_TEST_DESKTOP=1.');
 }

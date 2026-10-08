@@ -5,6 +5,7 @@ import type { SettingsPage } from './renderer-store';
 import { Brand, Icon } from './Icon';
 import { Actions } from './Actions';
 import { History } from './History';
+import { Dictionary } from './Dictionary';
 import { Toolbar } from './Toolbar';
 import { Select, SettingSwitch, controlData } from './controls';
 import { FadeSnappy } from './motion';
@@ -12,6 +13,7 @@ import { ui, useAppState, perform, toast } from './state';
 declare const GLINT_APP_VERSION: string;
 const pages = [
   { id: 'actions', title: '动作', icon: 'sparkles' }, { id: 'model', title: '模型', icon: 'link' },
+  { id: 'dictionary', title: '词典', icon: 'book-a' },
   { id: 'triggers', title: '触发', icon: 'zap' }, { id: 'appearance', title: '外观', icon: 'palette' },
   { id: 'history', title: '历史', icon: 'book' },
   { id: 'diagnostics', title: '诊断', icon: 'activity' },
@@ -86,7 +88,7 @@ function HistoryPage() {
 export function SettingsView() {
   const { snapshot, page, busy, dirty, resetVersion } = useAppState();
   const current = pages.find(p => p.id === page)!;
-  const Contents = ({ actions: Actions, model: Model, triggers: Triggers, appearance: Appearance, history: HistoryPage, diagnostics: Diagnostics })[page]!;
+  const Contents = ({ actions: Actions, model: Model, dictionary: Dictionary, triggers: Triggers, appearance: Appearance, history: HistoryPage, diagnostics: Diagnostics })[page]!;
   return <div className={'app-shell ' + (snapshot.settingsMaximized ? 'maximized' : '')}>
     <header className="settings-titlebar"><div className="brand"><Brand /><span className="brand-wordmark"><span>Glint</span><small className="version-label">{GLINT_APP_VERSION}</small></span></div><h1>{current.title}</h1>
       <span id="engine-status" className="status-badge" data-state={snapshot.status.hook}><i /><span>{({ starting: '正在连接', ready: '划词已就绪', paused: '已暂停', error: '需要检查' })[snapshot.status.hook]}</span></span>

@@ -25,9 +25,9 @@ export function setupSelection() {
   }
   // Linux uses the upstream PRIMARY backend; only Windows builds the Glint extension.
   if (process.platform === 'linux') return;
-  for (const name of ['clipboard-history.h', 'clipboard-history.cpp', 'clipboard-history-policy.h'])
+  for (const name of ['clipboard-history.h', 'clipboard-history.cpp', 'clipboard-history-policy.h', 'clipboard-capture.h', 'clipboard-capture.cpp'])
     copyFileSync(path.join(root, 'native', name), path.join(folder, 'src/windows/lib', name));
-  const sources = ['binding.gyp', 'index.js', 'index.d.ts', 'src/windows/core/types.h', 'src/windows/core/engine.cc', 'src/windows/selection_hook.cc', 'src/windows/lib/clipboard.cc', 'src/windows/lib/clipboard-history.h', 'src/windows/lib/clipboard-history.cpp', 'src/windows/lib/clipboard-history-policy.h'];
+  const sources = ['binding.gyp', 'index.js', 'index.d.ts', 'src/windows/core/types.h', 'src/windows/core/engine.cc', 'src/windows/selection_hook.cc', 'src/windows/lib/clipboard.h', 'src/windows/lib/clipboard.cc', 'src/windows/lib/clipboard-history.h', 'src/windows/lib/clipboard-history.cpp', 'src/windows/lib/clipboard-history-policy.h', 'src/windows/lib/clipboard-capture.h', 'src/windows/lib/clipboard-capture.cpp'];
   const fingerprint = digest(Buffer.concat([readFileSync(patch), ...sources.map(file => readFileSync(path.join(folder, file)))]));
   const binary = path.join(folder, 'prebuilds/win32-x64/selection-hook.node');
   const stampPath = path.join(folder, 'glint-native.json');

@@ -34,6 +34,9 @@ jobs:
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - run: npm run check
+      - run: xvfb-run -a node scripts/smoke.mjs toolbar dictionary
+        env:
+          XDG_SESSION_TYPE: x11
       - run: xvfb-run -a npm run smoke:records
         env:
           XDG_SESSION_TYPE: x11
@@ -75,6 +78,7 @@ jobs:
       - run: npm run setup:electron
       - run: npm run check
       - run: node scripts/smoke.mjs records
+      - run: node scripts/smoke.mjs toolbar dictionary
       - name: Upload smoke failure reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -88,4 +92,5 @@ jobs:
             work/smoke-*/work/smoke-report.json
             work/smoke-*/work/*.png
       # UI Automation smoke tests need an interactive Windows desktop.
+      - run: npm run test:clipboard-history -- -CaptureOnly
       # Run npm run smoke locally before releases and for UI/IPC/native changes.

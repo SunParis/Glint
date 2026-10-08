@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, globalShortcut, screen } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, screen } from 'electron';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,8 +6,11 @@ import { defaults } from '../../src/core';
 import { platformDefaults } from '../../src/platform';
 import type { Settings, Selection } from '../../src/core';
 import type { ApplicationRuntime } from '../../src/main';
+import { mdxFixture } from '../fixtures/mdx';
 
 export async function runSmoke(runtime: ApplicationRuntime, mode: string) {
+  if (mode === 'toolbar') return runToolbarSmoke(runtime);
+  if (mode === 'dictionary') return runDictionarySmoke(runtime);
   if (mode === 'ui') return runSettingsSmoke(runtime);
   if (mode === 'records') return runRecordsSmoke(runtime);
   if (mode === 'native') return runNativeSmoke(runtime);
@@ -205,10 +208,251 @@ async function runSettingsSmoke(runtime: ApplicationRuntime) {
   } finally { runtime.setup!.webContents.debugger.detach(); }
   await runtime.setup!.webContents.executeJavaScript("document.querySelector('[data-revert]').click()");
   await wait(250);
-
 }
+async function runToolbarSmoke(runtime: ApplicationRuntime) {
+  const { wait, until } = await prepareScenario(runtime);
+  // Synthetic selections must retain the painted toolbar instead of remounting/fading it.
+  runtime.settings.enabled = false; runtime.configureHost();
+  await until(() => runtime.status.hook === 'paused', 'pause desktop events during toolbar checks');
+  try {
+    runtime.setup!.focus();
+    await until(() => runtime.setup!.isFocused(), 'source window focus before toolbar');
+    await runtime.showDemo();
+    await until(() => !!runtime.toolbar?.isVisible(), 'initial toolbar');
+    const toolbar = runtime.toolbar!;
+    assert.equal(toolbar.isFocused(), false, 'appearing toolbar must not take the source focus');
+    assert.equal(runtime.setup!.isFocused(), true, 'source remains active after showInactive');
+    if (process.platform === 'win32') assert.equal(toolbar.isFocusable(), true, 'Windows must allow mouse activation so the first press is delivered');
+    await toolbar.webContents.executeJavaScript(`(() => {
+      window.originalToolbar = document.querySelector('.toolbar-wrap');
+      window.toolbarOpacities = [];
+      window.sampleToolbar = true;
+      const sample = () => {
+        if (!window.sampleToolbar) return;
+        window.toolbarOpacities.push(Number(getComputedStyle(document.querySelector('.toolbar-wrap')).opacity));
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    })()`);
+    let repeatedShows = 0;
+    const showInactive = toolbar.showInactive.bind(toolbar);
+    toolbar.showInactive = () => { repeatedShows++; showInactive(); };
+    try {
+      for (let index = 0; index < 4; index++) {
+        await runtime.showDemo(); await wait(120);
+        assert.equal(await toolbar.webContents.executeJavaScript("document.querySelector('.toolbar-wrap') === window.originalToolbar"), true, 'new selections retain the same toolbar DOM');
+      }
+      const opacity = await toolbar.webContents.executeJavaScript('window.sampleToolbar = false; window.toolbarOpacities');
+      assert.ok(opacity.length > 0 && opacity.every((value: number) => value === 1), 'visible toolbar must never reset to transparent');
+      assert.equal(repeatedShows, 0, 'measurements must not show an already-visible native window');
+      const id = runtime.selection!.id;
+      runtime.dismissToolbar();
+      await toolbar.webContents.executeJavaScript(`window.glint.fitToolbar(${id}, 400, 60)`);
+      assert.equal(toolbar.isVisible(), false, 'late measurements cannot reopen a dismissed toolbar');
+      await runtime.showDemo();
+      await until(() => toolbar.isVisible(), 'reused toolbar reappears');
+      assert.equal(repeatedShows, 1, 'hidden toolbar is revealed once');
+
+      // Hold renderer frames after measurement to verify that the native window
+      // cannot be revealed early or resurrected by a cancelled presentation.
+      runtime.dismissToolbar();
+      await toolbar.webContents.executeJavaScript(`window.savedToolbarRAF = window.requestAnimationFrame;
+        window.pendingToolbarFrames = [];
+        window.requestAnimationFrame = callback => window.pendingToolbarFrames.push(callback); void 0;`);
+      try {
+        await runtime.showDemo();
+        let waiting = false;
+        for (let attempt = 0; attempt < 50 && !waiting; attempt++) {
+          waiting = await toolbar.webContents.executeJavaScript('window.pendingToolbarFrames.length > 0');
+          if (!waiting) await wait(30);
+        }
+        assert.equal(waiting, true, 'renderer waits for a frame after sizing');
+        assert.equal(toolbar.isVisible(), false, 'measurements alone cannot reveal the window');
+        runtime.dismissToolbar();
+      } finally {
+        await toolbar.webContents.executeJavaScript(`window.requestAnimationFrame = window.savedToolbarRAF;
+          window.pendingToolbarFrames.forEach(callback => requestAnimationFrame(callback));`);
+      }
+      await wait(200);
+      assert.equal(toolbar.isVisible(), false, 'late renderer frames cannot reopen a dismissed toolbar');
+      await runtime.showDemo();
+      await until(() => toolbar.isVisible(), 'painted toolbar reappears');
+      assert.equal(repeatedShows, 2, 'cancelled frames never cause an extra show');
+
+      // Reproduce a delayed native resize: RAF keeps running against the old
+      // viewport, so elapsed frames must not be mistaken for a painted new size.
+      runtime.dismissToolbar();
+      const setBounds = toolbar.setBounds.bind(toolbar);
+      const getContentBounds = toolbar.getContentBounds.bind(toolbar);
+      setBounds({ width: 180, height: 100 });
+      await wait(100);
+      let pendingBounds: Parameters<typeof toolbar.setBounds>[0] | undefined;
+      toolbar.setBounds = next => { pendingBounds = next; };
+      // Main sees the new native client bounds before Chromium receives resize.
+      toolbar.getContentBounds = () => ({ ...getContentBounds(), ...pendingBounds });
+      try {
+        await runtime.showDemo();
+        await until(() => !!pendingBounds, 'native resize requested');
+        await wait(100);
+        assert.equal(toolbar.isVisible(), false, 'old viewport frames must not reveal the toolbar');
+        setBounds(pendingBounds!);
+        await until(() => toolbar.isVisible(), 'target viewport ready after delayed resize');
+        assert.equal(repeatedShows, 3, 'delayed resize presents once');
+      } finally { toolbar.setBounds = setBounds; toolbar.getContentBounds = getContentBounds; runtime.dismissToolbar(); }
+      const originalSettings = structuredClone(runtime.settings);
+      const originalBounds = runtime.setup!.getBounds();
+      try {
+        for (const display of screen.getAllDisplays()) {
+          const area = display.workArea;
+          runtime.setup!.setBounds({ x: area.x + 20, y: area.y + 20, width: Math.min(920, area.width - 40), height: Math.min(640, area.height - 40) });
+          await wait(100);
+          for (const density of ['compact', 'comfortable'] as const) {
+            runtime.dismissToolbar();
+            runtime.settings = { ...originalSettings, density };
+            await runtime.showDemo();
+            try { await until(() => toolbar.isVisible(), `painted ${density} toolbar on display ${display.id}`); }
+            catch (error) {
+              console.error('Toolbar presentation state:', { bounds: toolbar.getBounds(), content: toolbar.getContentBounds(), minimum: toolbar.getMinimumSize(), viewport: await toolbar.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight, scale: devicePixelRatio })') });
+              throw error;
+            }
+            const bounds = toolbar.getBounds();
+            const viewport = await toolbar.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight })');
+            assert.ok(Math.abs(viewport.width - bounds.width) <= 1 && Math.abs(viewport.height - bounds.height) <= 1, 'renderer and native surface agree before showing across display scales');
+            await wait(150);
+            assert.deepEqual(toolbar.getBounds(), bounds, 'visible window must not resize again after its first frame');
+          }
+        }
+      } finally { runtime.settings = originalSettings; runtime.setup!.setBounds(originalBounds); }
+      runtime.dismissToolbar();
+      await runtime.showDemo();
+      await until(() => toolbar.isVisible(), 'toolbar for pointer activation');
+      runtime.selection = { ...runtime.selection!, text: 'apple' };
+      const buttonPoint = await toolbar.webContents.executeJavaScript(`(() => {
+        const button = document.querySelector('[data-run="translate"]');
+        const rect = button.getBoundingClientRect();
+        return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+      })()`);
+      toolbar.webContents.sendInputEvent({ type: 'mouseDown', ...buttonPoint, button: 'left', clickCount: 1 });
+      toolbar.webContents.sendInputEvent({ type: 'mouseUp', ...buttonPoint, button: 'left', clickCount: 1 });
+      await until(() => !!runtime.resultWindow?.isVisible(), 'pointer click opens translation window');
+      assert.equal(runtime.result?.source, 'apple');
+      assert.equal(runtime.result?.dictionary?.word.toLowerCase(), 'apple');
+      assert.equal(toolbar.isVisible(), false, 'successful action dismisses toolbar');
+      runtime.resultWindow!.close();
+    } finally { toolbar.showInactive = showInactive; runtime.dismissToolbar(); }
+  } finally { runtime.settings.enabled = true; runtime.configureHost(); }
+  console.log('Toolbar stability smoke passed.');
+}
+async function runDictionarySmoke(runtime: ApplicationRuntime) {
+  const { wait, until, folder, ui, untilUI } = await prepareScenario(runtime, false);
+  const { createServer } = await import('node:http');
+  let requests = 0;
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { requests++; res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: 'Local AI test response' } }] })); });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const save = async (enabled: boolean, model: string) => {
+    // This scenario uses synthetic selections; desktop mouse/keyboard activity must not dismiss them.
+    const next = { ...runtime.settings, enabled: false, dictionaryEnabled: enabled, provider: { baseUrl: `http://127.0.0.1:${address.port}/v1`, model } };
+    const response = await runtime.setup!.webContents.executeJavaScript(`window.glint.save(${JSON.stringify(next)})`);
+    assert.equal(response.ok, true, response.error);
+    await until(() => runtime.status.hook === 'paused', 'pause native capture during dictionary checks');
+  };
+  const select = async (text: string, action = 'translate') => {
+    await runtime.showDemo();
+    await until(() => !!runtime.toolbar?.isVisible(), 'dictionary toolbar');
+    runtime.selection = { ...runtime.selection!, text };
+    const response = await runtime.toolbar!.webContents.executeJavaScript(`window.glint.run(${JSON.stringify(action)}, ${runtime.selection.id})`);
+    assert.equal(response.ok, true, response.error);
+    await until(() => !!runtime.result && !runtime.result.busy, 'dictionary result');
+    await wait(100);
+  };
+  try {
+    await save(true, '');
+    await select('“Apple,”');
+    assert.equal(requests, 0, 'offline hit never calls the model');
+    assert.equal(runtime.result!.dictionary?.word.toLowerCase(), 'apple');
+    assert.equal(runtime.result!.error, undefined, 'offline lookup works without a model configured');
+    assert.match(runtime.result!.text, /苹果/);
+    assert.equal(await runtime.resultWindow!.webContents.executeJavaScript("document.querySelector('#result-retry').textContent"), 'AI 翻译');
+    const recorded = await runtime.resultWindow!.webContents.executeJavaScript(`window.glint.recordSource(${JSON.stringify(runtime.result!.id)})`);
+    assert.equal(recorded.ok, true, recorded.error);
+    const row = await runtime.setup!.webContents.executeJavaScript(`window.glint.getRecord('translation', ${JSON.stringify(runtime.result!.id)})`);
+    assert.equal(row.originalText, '“Apple,”'); assert.match(row.resultText, /ECDICT/);
+    if (process.platform === 'win32') {
+      await wait(250);
+      await fs.promises.writeFile(path.join(folder, 'dictionary.png'), (await runtime.resultWindow!.webContents.capturePage()).toPNG());
+    }
+    runtime.resultWindow!.setSize(380, 240);
+    await wait(100);
+    assert.equal(await runtime.resultWindow!.webContents.executeJavaScript(`(() => {
+      const footer = document.querySelector('.result-footer');
+      return footer.scrollWidth <= footer.clientWidth;
+    })()`), true, 'dictionary controls fit the smallest card');
+    runtime.resultWindow!.setSize(480, 360);
+    await save(true, 'local-test');
+    await runtime.resultWindow!.webContents.executeJavaScript('window.glint.retryResult()');
+    await until(() => !runtime.result?.busy, 'explicit AI translation');
+    assert.equal(requests, 1); assert.equal(runtime.result!.dictionary, undefined);
+    assert.equal(runtime.result!.text, 'Local AI test response');
+    assert.equal((await runtime.resultWindow!.webContents.executeJavaScript(`window.glint.recordSource(${JSON.stringify(runtime.result!.id)})`)).ok, true);
+    const updated = await runtime.setup!.webContents.executeJavaScript(`window.glint.getRecord('translation', ${JSON.stringify(runtime.result!.id)})`);
+    assert.equal(updated.originalText, '“Apple,”'); assert.equal(updated.resultText, 'Local AI test response');
+    for (const [text, action] of [['zxqvnotaword', 'translate'], ['an apple a day', 'translate'], ['apple', 'polish'], ['apple', 'explain']]) {
+      const before: number = requests;
+      await select(text, action);
+      assert.equal(requests, before + 1, 'misses, sentences and other actions use the model');
+      assert.equal(runtime.result!.dictionary, undefined);
+    }
+    await save(false, 'local-test');
+    const before: number = requests;
+    await select('apple');
+    assert.equal(requests, before + 1, 'dictionary opt-out is honored');
+    assert.equal(runtime.result!.dictionary, undefined);
+    // A renamed built-in action keeps its dictionary identity.
+    runtime.settings.actions[0].name = '译文';
+    await save(true, ''); await select('went');
+    assert.ok(runtime.result!.dictionary); assert.equal(runtime.result!.actionName, '译文');
+    await save(true, 'local-test');
+    const lookup = runtime.dictionary.lookup;
+    try {
+      runtime.dictionary.lookup = () => { throw new Error('fixture unavailable dictionary'); };
+      const before: number = requests;
+      await select('apple');
+      assert.equal(requests, before + 1, 'an unavailable dictionary gracefully falls back to the model');
+      assert.equal(runtime.result!.error, undefined);
+    } finally { runtime.dictionary.lookup = lookup; }
+    await ui("document.querySelector('[data-page=dictionary]').click()");
+    await untilUI("!!document.querySelector('[data-import-dictionary]') && !document.querySelector('[data-import-dictionary]').disabled", 'dictionary settings loaded');
+    assert.match(await runtime.setup!.webContents.executeJavaScript("document.querySelector('.page-description').textContent"), /仅用于内置「翻译」/);
+    const filename = path.join(folder, 'custom.mdx'); fs.writeFileSync(filename, mdxFixture());
+    const showOpenDialog = dialog.showOpenDialog;
+    dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [filename] })) as typeof dialog.showOpenDialog;
+    try { await ui("document.querySelector('[data-import-dictionary]').click()"); }
+    finally { dialog.showOpenDialog = showOpenDialog; }
+    await untilUI("document.querySelectorAll('[data-dictionary-id]').length === 1", 'MDX import through settings IPC');
+    if (process.platform === 'win32') await fs.promises.writeFile(path.join(folder, 'dictionary-settings.png'), (await runtime.setup!.webContents.capturePage()).toPNG());
+    const custom = runtime.customDictionaries.list()[0];
+    await select('apple');
+    assert.equal(await runtime.resultWindow!.webContents.executeJavaScript('(async () => (await window.glint.snapshot()).result.dictionary.source)()'), 'Glint 测试词典');
+    assert.match(runtime.result!.text, /自定义苹果/);
+    assert.equal(await runtime.resultWindow!.webContents.executeJavaScript('window.glint.listDictionaries().then(() => false, () => true)'), true, 'dictionary management is settings-only');
+    assert.equal((await runtime.resultWindow!.webContents.executeJavaScript(`window.glint.recordSource(${JSON.stringify(runtime.result!.id)})`)).ok, true);
+    const customRecord = await runtime.setup!.webContents.executeJavaScript(`window.glint.getRecord('translation', ${JSON.stringify(runtime.result!.id)})`);
+    assert.match(customRecord.resultText, /来源：Glint 测试词典/);
+    await runtime.setup!.webContents.executeJavaScript(`window.glint.changeDictionary('${custom.id}', 'disable')`);
+    await select('apple'); assert.equal(await runtime.resultWindow!.webContents.executeJavaScript('(async () => (await window.glint.snapshot()).result.dictionary.source)()'), 'ECDICT');
+    await runtime.setup!.webContents.executeJavaScript(`window.glint.changeDictionary('${custom.id}', 'remove')`);
+    assert.equal(runtime.customDictionaries.list().length, 0); assert.equal(fs.existsSync(filename), true);
+    fs.writeFileSync(path.join(folder, 'smoke-report.json'), JSON.stringify({ passed: true, checks: ['offline without model', 'source punctuation preserved', 'history persistence and AI update', 'AI translation', 'miss/sentence fallback', 'other actions unchanged', 'opt-out', 'renamed action', 'unavailable dictionary fallback'], requests }, null, 2));
+    console.log('Dictionary smoke passed.');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+}
+
 async function runRecordsSmoke(runtime: ApplicationRuntime) {
-  const { wait, until, folder, ui, untilUI } = await prepareScenario(runtime);
+  const { wait, until, folder, ui, untilUI } = await prepareScenario(runtime, false);
   const { createServer } = await import('node:http');
   let received = '';
   let requestCount = 0;
@@ -230,11 +474,14 @@ async function runRecordsSmoke(runtime: ApplicationRuntime) {
   try {
     const address = server.address(); assert.ok(address && typeof address !== 'string');
     const next = structuredClone(runtime.settings); next.provider = { baseUrl: `http://127.0.0.1:${address.port}/v1`, model: 'local-test' };
+    // Synthetic records selections must not be dismissed by desktop activity.
+    next.enabled = false;
     const saved = await runtime.setup!.webContents.executeJavaScript(`window.glint.save(${JSON.stringify(next)})`);
     assert.equal(saved.ok, true, saved.error);
-    await runtime.showDemo(); await wait(350);
-    assert.ok(runtime.toolbar?.isVisible());
-    assert.equal(runtime.toolbar!.isFocusable(), false);
+    await until(() => runtime.status.hook === 'paused', 'pause desktop capture during records checks');
+    await runtime.showDemo();
+    await until(() => !!runtime.toolbar?.isVisible(), 'records toolbar presentation');
+    assert.equal(runtime.toolbar!.isFocusable(), process.platform === 'win32');
     assert.equal(await runtime.toolbar!.webContents.executeJavaScript("document.querySelectorAll('[data-run]').length"), next.actions.filter(a => a.enabled).length);
     assert.equal(await runtime.toolbar!.webContents.executeJavaScript("document.querySelector('[data-run=copy]')"), null, 'the retired default copy action is absent');
     await fs.promises.writeFile(path.join(folder, 'toolbar.png'), (await runtime.toolbar!.webContents.capturePage()).toPNG());
@@ -255,7 +502,9 @@ async function runRecordsSmoke(runtime: ApplicationRuntime) {
     for (const density of ['comfortable', 'compact'] as const) {
       runtime.settings = structuredClone(next); runtime.settings.density = density;
       runtime.settings.actions.find(a => a.id === 'search')!.name = '搜索 WMWM';
-      await runtime.showDemo(); await wait(150);
+      await runtime.showDemo();
+      await until(() => !!runtime.toolbar?.isVisible(), `records toolbar ${density}`);
+      await wait(100);
       const layout = await readToolbarLayout();
       assert.ok(layout.lastRight <= layout.viewportRight + 0.5, `Last action clipped (${density}): ${JSON.stringify(layout)}`);
     }
@@ -613,10 +862,24 @@ async function runNativeSmoke(runtime: ApplicationRuntime) {
     const savedClipboard = await Promise.all((await clipboard.read()).filter(item => item.types.length > 0).map(async item =>
       new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type => [type, await item.getType(type)]))))));
     const savedSettings = structuredClone(runtime.settings);
+    // Native smoke owns only its fixture's copy shortcuts. Publish test payloads
+    // with the Windows exclusion format so regression checks do not evict Win+V
+    // entries from a real desktop. Production captures never use this fixture.
+    const excludedItem = (data: ConstructorParameters<typeof ClipboardItem>[0]) => new ClipboardItem({
+      ...data, 'electron application/osclipboard;format="ExcludeClipboardContentFromMonitorProcessing"': new Blob([new Uint8Array(4)])
+    });
+    let copyPayload: 'text' | 'image' | 'none' = 'text';
+    const copiedText = 'Glint clipboard fixture';
+    const testPNG = new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP8z8DwHwAFBQIAgJbjwgAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' });
+    let copyWrite: Promise<void> = Promise.resolve();
+    fixture.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || !input.control || !['c', 'insert'].includes(input.key.toLowerCase())) return;
+      event.preventDefault();
+      if (copyPayload !== 'none') copyWrite = clipboard.write([excludedItem(copyPayload === 'image'
+        ? { 'image/png': testPNG } : { 'text/plain': copiedText })]);
+    });
     try {
-      const copiedText = 'Glint clipboard fixture';
       // A distinct copy response proves that clipboard-only bypasses a working UIA provider.
-      await fixture.webContents.executeJavaScript(`document.addEventListener('copy', event => { event.preventDefault(); if (!window.blockCopy) event.clipboardData.setData('text/plain', ${JSON.stringify(copiedText)}); });`);
       const capture = async (method: Settings['selectionMethod']): Promise<Selection | undefined> => {
         runtime.dismissToolbar();
         runtime.selection = undefined;
@@ -630,7 +893,7 @@ async function runNativeSmoke(runtime: ApplicationRuntime) {
         await until(() => !runtime.capturePending, `native ${method} capture`);
         return runtime.selection as Selection | undefined;
       };
-      await clipboard.write([new ClipboardItem({ 'text/plain': 'Glint clipboard backup', 'text/html': '<b>Glint clipboard backup</b>' })]);
+      await clipboard.write([excludedItem({ 'text/plain': 'Glint clipboard backup', 'text/html': '<b>Glint clipboard backup</b>' })]);
       const readHTML = async () => {
         const item = (await clipboard.read()).find(item => item.types.includes('text/html'));
         if (!item) return undefined;
@@ -647,22 +910,28 @@ async function runNativeSmoke(runtime: ApplicationRuntime) {
       await clipboard.clear();
       assert.equal((await capture('clipboard'))?.text, copiedText);
       assert.equal((await clipboard.read()).flatMap(item => item.types).length, 0, 'copy mode restores an empty clipboard');
-      await fixture.webContents.executeJavaScript('window.blockCopy = true');
+      copyPayload = 'none';
       assert.equal(await capture('clipboard'), undefined, 'failed copy must not accept UIA text');
-      await fixture.webContents.executeJavaScript('window.blockCopy = false');
+      assert.equal((await clipboard.read()).flatMap(item => item.types).length, 0, 'failed copy leaves clipboard untouched');
+      copyPayload = 'image';
+      assert.equal(await capture('clipboard'), undefined, 'screenshot is not selected text');
+      await copyWrite;
+      assert.equal(await clipboard.has('image/png'), true, 'new screenshot survives capture without being replaced by the backup');
+      copyPayload = 'text';
       assert.equal((await capture('auto'))?.text, fixtureText, 'on-demand mode prefers available UIA text');
       assert.equal((await capture('accessibility'))?.text, fixtureText, 'switching back disables forced copy');
       runtime.settings.excludedApps.push(path.basename(process.execPath));
       assert.equal(await capture('clipboard'), undefined, 'copy mode respects excluded applications');
       runtime.settings.excludedApps = [...savedSettings.excludedApps];
       await fixture.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<canvas tabindex="0" aria-label="Copy fixture"></canvas>'));
-      await fixture.webContents.executeJavaScript(`document.querySelector('canvas').focus(); document.addEventListener('copy', event => { event.preventDefault(); event.clipboardData.setData('text/plain', ${JSON.stringify(copiedText)}); });`);
+      await fixture.webContents.executeJavaScript("document.querySelector('canvas').focus()");
       assert.equal(await capture('accessibility'), undefined, 'blank canvas has no accessible selection');
       assert.equal((await capture('auto'))?.text, copiedText, 'on-demand mode copies when accessibility has no text');
-      console.log('Glint native smoke passed: UIA, forced copy, on-demand fallback, mode switching, exclusions and clipboard restoration');
+      console.log('Glint native smoke passed: UIA, forced copy, on-demand fallback, mode switching, exclusions, clipboard restoration and screenshot preservation');
     } finally {
       runtime.settings = savedSettings; runtime.configureHost(); runtime.dismissToolbar();
-      if (savedClipboard.length) await clipboard.write(savedClipboard); else await clipboard.clear();
+      await copyWrite;
+      if (savedClipboard.length) await clipboard.write([...savedClipboard, excludedItem({})]); else await clipboard.clear();
     }
     passed = true;
   } finally {
@@ -673,7 +942,7 @@ async function runNativeSmoke(runtime: ApplicationRuntime) {
 
 }
 
-async function prepareScenario(runtime: ApplicationRuntime) {
+async function prepareScenario(runtime: ApplicationRuntime, focusForInput = true) {
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (condition: () => boolean, description: string) => { const end = Date.now() + 15000; while (!condition()) { if (Date.now() > end) throw new Error(`Timeout: ${description}`); await wait(60); } };
   const folder = path.join(runtime.testRoot, 'work'); fs.mkdirSync(folder, { recursive: true });
@@ -683,7 +952,13 @@ async function prepareScenario(runtime: ApplicationRuntime) {
   await wait(500);
   // React commits on the next render; each interaction waits for that commit before reading DOM.
   const ui = async (code: string) => {
-    runtime.setup!.focus(); runtime.setup!.webContents.focus();
+    // DOM-only records/dictionary checks do not need OS foreground activation.
+    // Keyboard/focus scenarios retain their explicit desktop-focus assertions.
+    if (focusForInput && !runtime.setup!.isFocused()) {
+      runtime.setup!.focus();
+      await until(() => !!runtime.setup?.isFocused(), 'settings focus before interaction');
+    }
+    if (focusForInput && !runtime.setup!.webContents.isFocused()) runtime.setup!.webContents.focus();
     await runtime.setup!.webContents.executeJavaScript(code, true);
     await runtime.setup!.webContents.executeJavaScript(`(async () => {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));

@@ -14,7 +14,7 @@ export function Select({ label, value, options, onChange, field, actionField }: 
     {options.map(([key, text]) => <Option key={key} value={key}>{text}</Option>)}
   </Dropdown></Field>;
 }
-export function SettingSwitch({ label, description, field }: { label: string; description: string; field: 'enabled' }) {
+export function SettingSwitch({ label, description, field }: { label: string; description: string; field: 'enabled' | 'dictionaryEnabled' }) {
   const { draft } = useAppState();
   const id = useId('switch');
   return <div className="switch-setting"><div><label htmlFor={id}>{label}</label><p>{description}</p></div>

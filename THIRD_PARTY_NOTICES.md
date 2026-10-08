@@ -6,6 +6,10 @@ Glint's original code and brand artwork are licensed under MIT. Third-party comp
 
 | Component | License | Use |
 | --- | --- | --- |
+| [ECDICT](https://github.com/skywind3000/ECDICT) | MIT (as supplied upstream) | Offline English–Chinese subset; [pinned source and transformation](third_party/ecdict/README.md), full license in `resources/dictionary/LICENSE` and `dist/licenses/ECDICT-LICENSE` |
+| [js-mdict 6.0.8](https://www.npmjs.com/package/js-mdict/v/6.0.8) | MIT for the included parser code | MDX parsing in a worker; pinned to this release. Its GPL minilzo implementation is excluded and replaced at build time. Version 7's AGPL code is not used. |
+| [lzo1x 1.0.1](https://github.com/mbtech-nl/lzo1x) | MIT | Pure TypeScript LZO decoder replacing upstream minilzo; its optional native addon is not shipped |
+| [htmlparser2](https://github.com/fb55/htmlparser2) | MIT, with dependency notices | Converts dictionary markup to inert text |
 | [Electron](https://github.com/electron/electron) | MIT, plus bundled component notices | Desktop runtime |
 | [selection-hook](https://github.com/0xfullex/selection-hook) | MIT | Windows selection with Glint's [copy-mode patch](patches/README.md), and upstream Linux X11/Wayland PRIMARY capture |
 | [node-addon-api](https://github.com/nodejs/node-addon-api) | MIT | Native addon support for selection-hook |
@@ -16,6 +20,8 @@ Glint's original code and brand artwork are licensed under MIT. Third-party comp
 | [Griffel](https://github.com/microsoft/griffel) | MIT | Fluent UI runtime styles |
 
 Frontend dependencies are bundled into the renderer. The build reads its bundle manifest and copies the full licenses of included packages (including transitive dependencies) to `dist/licenses/frontend/`, together with their exact versions in `dependencies.json`.
+
+The MDX worker has its own bundle manifest and full notices in `dist/licenses/dictionary/`. `scripts/mdict.mjs` replaces the upstream LZO wrapper, bounds scanner/decompression reads, and rejects a bundle containing upstream minilzo. Glint's reader also fixes cross-block and final-entry boundaries. RIPEMD-128 retains Feng Dihai's MIT attribution. Imported dictionary content is supplied by the user and is not redistributed with Glint.
 
 Fluent's built-in controls also use Fluent System Icons (MIT). The `@fluentui/react-icons@2.0.341` npm archive omits its license, so `third_party/fluentui-system-icons-LICENSE` preserves the upstream text at the package's git revision [`2e4da95009de778ae0f41ec6c17bc67c97f4dc56`](https://github.com/microsoft/fluentui-system-icons/blob/2e4da95009de778ae0f41ec6c17bc67c97f4dc56/LICENSE). Glint's action catalog remains Lucide.
 

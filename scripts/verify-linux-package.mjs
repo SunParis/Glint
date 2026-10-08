@@ -3,13 +3,19 @@ import { existsSync, readFileSync, mkdirSync, mkdtempSync, openSync, closeSync }
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { extractFile, listPackage } from '@electron/asar';
+import { writeDictionaryFixture } from './package-fixture.mjs';
 
 if (process.platform !== 'linux') throw new Error('Run Linux package verification in a Linux desktop session.');
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+for (const name of ['ecdict.sqlite', 'LICENSE', 'manifest.json']) {
+  assert.deepEqual(readFileSync(`release/linux-unpacked/resources/dictionary/${name}`), readFileSync(`dist/dictionary/${name}`), `Packaged dictionary mismatch: ${name}`);
+}
 const appImage = process.argv.includes('--appimage');
 if (appImage) assert.ok(existsSync(`release/Glint-${version}-linux-x64.AppImage`), 'Build the AppImage before verifying it');
 const archive = 'release/linux-unpacked/resources/app.asar';
 const entries = listPackage(archive);
+assert.deepEqual(extractFile(archive, 'dist/dictionary-worker.cjs'), readFileSync('dist/dictionary-worker.cjs'), 'Packaged MDX worker matches the build');
+assert.ok(!entries.some(name => name.startsWith('/node_modules/js-mdict/') || name.startsWith('/node_modules/lzo')), 'Only reviewed bundled parser code may ship');
 for (const file of ['dist/main.cjs', 'dist/selection-host.cjs', 'dist/preload.cjs', 'dist/renderer.js',
   'dist/licenses/selection-hook-LICENSE', 'dist/licenses/lucide-LICENSE', 'dist/licenses/LICENSES.chromium.html',
   'dist/licenses/electron-builder-LICENSE',
@@ -43,6 +49,7 @@ console.log('Verified refusal of unsandboxed startup.');
 const executables = ['release/linux-unpacked/glint', ...(appImage ? [`release/Glint-${version}-linux-x64.AppImage`] : [])];
 for (const file of executables) for (const ozoneArgs of [['--ozone-platform=x11'], []]) {
   const profile = mkdtempSync(path.resolve('work', 'linux-package-check-'));
+  await writeDictionaryFixture(profile);
   const env = { ...process.env, GLINT_SMOKE_ROOT: profile };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.APPIMAGE_EXTRACT_AND_RUN;
