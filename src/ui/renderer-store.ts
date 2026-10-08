@@ -1,6 +1,6 @@
 import type { Action, GlintAPI, Settings, Snapshot, UIEvent } from '../core';
 
-export type SettingsPage = 'actions' | 'model' | 'triggers' | 'appearance' | 'history' | 'diagnostics';
+export type SettingsPage = 'actions' | 'model' | 'dictionary' | 'triggers' | 'appearance' | 'history' | 'diagnostics';
 export interface RendererState {
   snapshot: Snapshot;
   draft: Settings;

@@ -6,6 +6,7 @@ export interface IPCContract {
   save: GlintAPI['save'];
   demo: GlintAPI['demo'];
   'fit-toolbar': GlintAPI['fitToolbar'];
+  'reveal-toolbar': GlintAPI['revealToolbar'];
   run: GlintAPI['run'];
   settings: GlintAPI['openSettings'];
   'settings-window': GlintAPI['settingsWindow'];
@@ -18,6 +19,9 @@ export interface IPCContract {
   'get-record': GlintAPI['getRecord'];
   'copy-record': GlintAPI['copyRecord'];
   'delete-record': GlintAPI['deleteRecord'];
+  'list-dictionaries': GlintAPI['listDictionaries'];
+  'import-dictionary': GlintAPI['importDictionary'];
+  'change-dictionary': GlintAPI['changeDictionary'];
   restart: GlintAPI['restart'];
   quit: GlintAPI['quit'];
 }

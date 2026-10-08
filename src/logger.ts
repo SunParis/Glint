@@ -18,6 +18,8 @@ interface LogFields {
   method?: string;
   version?: string;
   historyCleanup?: number;
+  width?: number;
+  height?: number;
 }
 export function errorCode(error: unknown): string {
   if (!error || typeof error !== 'object') return 'UNKNOWN';

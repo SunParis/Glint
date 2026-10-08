@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/skywind3000/ECDICT/tree/bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+  "revision": "bc015ed2e24a7abef49fc6dbbb7fe32c1dadaf8b",
+  "sourceSha256": "1a6947e04785db63613a92e14903cdae7954f7e84860b10e68e5c7cbb3f9c3cf",
+  "entriesSha256": "4bcea4427d82f4a8a2fe69883aef3613ec4c45dfb2523cf2f990cf810e707429",
+  "entries": 58226,
+  "compressedBytes": 1910951,
+  "license": "MIT",
+  "selection": "Single English words with Chinese meanings; exam tag, BNC/FRQ rank <= 50000, Collins stars or Oxford core flag."
+}

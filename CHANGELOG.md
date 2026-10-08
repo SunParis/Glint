@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-10-08（预览版）
+
+- 新增内置 ECDICT 精简英汉词库：翻译英文单词时优先离线查询释义、音标和词形变化，支持复制、记录及手动 AI 翻译；句子与未收录的词使用模型。
+- 新增「词典」页，可导入 MDX 1.x / 2.x 文字词典并立即启停、排序、移除；按自定义词典顺序查询后回退内置词库。词典查询仅用于内置翻译动作。
+- 修复复制取词与截图剪贴板的冲突：保留截图光标过滤，不再预先清空剪贴板，仅恢复经确认且未被后续复制替换的文本，清理历史时不占用系统剪贴板。
+- 修复 Windows 浮条偶发点击无响应：出现时保留源应用焦点，点击时允许正常激活。
+- 浮条显示前等待图标、原生首帧和实际尺寸就绪，校准不同缩放屏幕间的尺寸变化；保持组件复用并拒绝过期显示回执，补充显示、隐藏和尺寸诊断日志。
+- 将浮条显示时序独立为专用 hook，避免无关提示词更新触发重测；统一浮条与结果卡片间距，修正窄卡片底部按钮溢出。
+
+- Add compact offline ECDICT word lookup with definitions, phonetics, inflections, copying, history and explicit AI translation; unknown words and sentences use the model.
+- Add Dictionary settings with ordered MDX 1.x / 2.x text imports, enable/disable and removal. Imported dictionaries precede ECDICT; only the built-in Translate action uses dictionaries.
+- Preserve screenshot and file clipboard updates during copy capture, avoid pre-clearing the clipboard, restore only verified text and release the clipboard before history cleanup.
+- Allow Windows toolbar mouse activation without taking source focus on appearance, preventing discarded first presses.
+- Present the toolbar after assets, first native paint and its actual viewport are ready; reconcile display-scale changes, retain the same component and reject stale presentation acknowledgements. Add metadata-only presentation logs.
+- Extract toolbar presentation into a dedicated hook, avoid remeasuring unrelated prompt edits, unify spacing and keep narrow result-card controls within bounds.
+
 - 新增 Linux x64 的 X11 / Wayland PRIMARY 取词与 XWayland 浮条支持，保留独立取词进程；Wayland 默认快捷键触发，不支持来源应用排除。
 - Linux 设置与诊断按实际能力显示，浮条提供关闭按钮；记录和日志采用 XDG 目录，API Key 必须使用系统密钥环加密。
 - 切换桌面会话时保留应用排除规则和取词偏好，独立保存 Wayland 触发方式；Linux 原生 smoke 需显式确认使用可丢弃桌面。

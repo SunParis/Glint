@@ -1,6 +1,7 @@
 #include "clipboard-history.h"
 #include "clipboard-history-policy.h"
 #include "clipboard.h"
+#include "clipboard-capture.h"
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <iostream>
@@ -31,7 +32,7 @@ bool hasText(const std::wstring& text, const std::set<std::wstring>& original) {
     }
     return false;
 }
-void write(HWND owner, const std::wstring& text) {
+void write(HWND owner, const std::wstring& text, bool exclude = false) {
     require(OpenClipboard(owner), "open test clipboard");
     EmptyClipboard();
     HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
@@ -42,11 +43,67 @@ void write(HWND owner, const std::wstring& text) {
     GlobalUnlock(data);
     const bool success = SetClipboardData(CF_UNICODETEXT, data) != nullptr;
     if (!success) GlobalFree(data);
+    if (exclude) glint::ExcludeRestorationFromHistory();
     CloseClipboard();
     require(success, "write test clipboard");
 }
 
-int main(int argc, char**) {
+void testCapture() {
+    ClipboardBackup saved;
+    require(BackupClipboard(saved), "save user clipboard");
+    HWND owner = CreateWindowW(L"STATIC", L"Glint clipboard test", 0, 0, 0, 1, 1, HWND_MESSAGE, nullptr, GetModuleHandle(nullptr), nullptr);
+    require(owner != nullptr, "create clipboard test owner");
+    DWORD lastTestSequence = GetClipboardSequenceNumber();
+    auto restore = [&] {
+        if (OpenClipboard(owner)) {
+            if (GetClipboardSequenceNumber() == lastTestSequence) RestoreClipboard(saved, true);
+            CloseClipboard();
+        }
+        DestroyWindow(owner);
+    };
+    try {
+        write(owner, L"Glint original fixture", true);
+        lastTestSequence = GetClipboardSequenceNumber();
+        glint::ClipboardCapture capture;
+        require(capture.Begin(lastTestSequence), "begin real clipboard capture");
+        std::wstring text;
+        require(ReadClipboard(text) && text == L"Glint original fixture", "begin leaves original available");
+        write(owner, L"Glint temporary fixture", true);
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(capture.Read(owner, text) && text == L"Glint temporary fixture", "read owned temporary text");
+        require(capture.Restore(), "restore under original sequence lock");
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(ReadClipboard(text) && text == L"Glint original fixture", "old content restored");
+        require(capture.Begin(lastTestSequence), "begin screenshot race");
+        write(owner, L"Glint temporary fixture", true);
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(capture.Read(owner, text), "claim temporary text before screenshot");
+        require(OpenClipboard(owner), "open screenshot fixture");
+        EmptyClipboard();
+        HGLOBAL dib = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(BITMAPINFOHEADER) + 4);
+        auto header = static_cast<BITMAPINFOHEADER*>(GlobalLock(dib));
+        header->biSize = sizeof(BITMAPINFOHEADER); header->biWidth = header->biHeight = 1;
+        header->biPlanes = 1; header->biBitCount = 32; header->biSizeImage = 4;
+        GlobalUnlock(dib);
+        const bool imageWritten = SetClipboardData(CF_DIB, dib) != nullptr;
+        if (!imageWritten) GlobalFree(dib);
+        glint::ExcludeRestorationFromHistory();
+        CloseClipboard();
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(imageWritten, "publish screenshot fixture");
+        require(!capture.Restore() && IsClipboardFormatAvailable(CF_DIB), "concurrent screenshot preserved");
+        require(capture.Begin(lastTestSequence), "backup screenshot");
+        write(owner, L"Glint temporary fixture", true);
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(capture.Read(owner, text) && capture.Restore(), "capture restores prior image formats");
+        lastTestSequence = GetClipboardSequenceNumber();
+        require(IsClipboardFormatAvailable(CF_DIB), "original image format restored");
+        restore();
+        std::cout << "PASSED: real Windows text restoration, concurrent screenshot preservation and image backup (history excluded).\n";
+    } catch (...) { restore(); throw; }
+}
+
+int main(int argc, char** argv) {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     try {
         const std::set<std::wstring> previousIds{ L"original", L"same-text" };
@@ -60,6 +117,7 @@ int main(int argc, char**) {
         require(!glint::MayDeleteHistoryEntry(true, 2), "never guess among ambiguous matches");
         require(glint::MayDeleteHistoryEntry(true, 1), "delete only one unambiguous matching ID");
         std::cout << "PASSED: history identity, timestamp, ambiguity and clipboard-race policy.\n";
+        if (argc > 1 && std::string(argv[1]) == "--capture") { testCapture(); return 0; }
         const bool enabled = Clipboard::IsHistoryEnabled();
         std::cout << "Windows clipboard history enabled: " << enabled << '\n';
         if (!enabled) { std::cout << "SKIPPED: history disabled; system preference unchanged.\n"; return 0; }

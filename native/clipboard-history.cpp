@@ -93,15 +93,14 @@ HistoryCleanup ClipboardHistoryCapture::Finish(DWORD restoredSequence) noexcept 
                 candidate = item;
             }
             if (candidate) {
-                // Hold the clipboard only for the final identity check and deletion,
-                // so a concurrent manual copy cannot race this last check.
-                if (!OpenClipboard(nullptr)) return HistoryCleanup::Skipped;
+                // Delete the matched immutable history ID, without holding the
+                // system clipboard across a WinRT call. A screenshot writer must
+                // remain free to publish new content while history is updating.
                 bool removed = false;
                 try {
                     if (MayDeleteHistoryEntry(GetClipboardSequenceNumber() == restoredSequence, 1))
                         removed = Clipboard::DeleteItemFromHistory(candidate);
                 } catch (...) { }
-                CloseClipboard();
                 return removed ? HistoryCleanup::Removed : HistoryCleanup::Skipped;
             }
             Sleep(20);

@@ -142,18 +142,19 @@ index 8625e9d..fd0fe25 100644
      // First paragraph left-top point (start position)
      resultObj.Set(Napi::String::New(env, "startTopX"), Napi::Number::New(env, selectionInfo.startTop.x));
 diff --git a/src/windows/core/engine.cc b/src/windows/core/engine.cc
-index 1bae811..df32598 100644
+index 1bae811..b4f7ccc 100644
 --- a/src/windows/core/engine.cc
 +++ b/src/windows/core/engine.cc
-@@ -19,6 +19,7 @@
+@@ -19,6 +19,8 @@
  #include <vector>
  
  #include "../lib/clipboard.h"
 +#include "../lib/clipboard-history.h"
++#include "../lib/clipboard-capture.h"
  #include "../lib/string_pool.h"
  #include "../lib/utils.h"
  
-@@ -150,7 +151,7 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
+@@ -150,7 +152,7 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
  
      bool hasNonTextSelection = false;
      // Prefer UIA for modern applications.
@@ -162,7 +163,7 @@ index 1bae811..df32598 100644
      {
          SetStage(RetrievalStage::UIAutomation);
          const TextRetrievalResult uiaResult = GetTextViaUIAutomation(hwnd, selectionInfo);
-@@ -168,7 +169,7 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
+@@ -168,7 +170,7 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
      }
  
      // Fall back to MSAA/IAccessible for legacy applications and compatibility providers.
@@ -171,17 +172,35 @@ index 1bae811..df32598 100644
      {
          SetStage(RetrievalStage::Accessible);
          const TextRetrievalResult accessibleResult = GetTextViaAccessible(hwnd, selectionInfo);
-@@ -251,6 +252,9 @@ bool SelectionEngine::ShouldProcessViaClipboard(const std::wstring &programName)
+@@ -251,6 +253,19 @@ bool SelectionEngine::ShouldProcessViaClipboard(const std::wstring &programName)
      }
      if (!result)
          return false;
-+    // Explicit copy mode must also work with PDF readers using custom cursors.
++    // Forced copy still needs a gesture filter: screenshot/drawing drags must
++    // never inject copy shortcuts. Keep custom-cursor PDF reader exceptions.
 +    if (config_->clipboardOnly)
-+        return true;
++    {
++        const auto down = config_->mouseDownCursor, up = config_->mouseUpCursor;
++        const auto cross = LoadCursor(NULL, IDC_CROSS);
++        const auto beam = LoadCursor(NULL, IDC_IBEAM);
++        const auto arrow = LoadCursor(NULL, IDC_ARROW);
++        const auto hand = LoadCursor(NULL, IDC_HAND);
++        return glint::CopyCursorAllowed(config_->triggeredByUser, down == cross || up == cross,
++            down == beam || up == beam || (down == arrow && up == arrow) || (down == hand && up == hand),
++            IsInFilterList(programName, config_->excludeClipboardCursorDetect));
++    }
  
      // A direct getCurrentSelection() call has no reliable mouse cursor context, so the
      // cursor heuristic applies only to automatic mouse-driven retrieval.
-@@ -683,6 +687,13 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+@@ -676,13 +691,20 @@ bool SelectionEngine::SetTextRangeCoordinates(IUIAutomationTextRange *range, Tex
+ /**
+  * Last-resort retrieval using a saved clipboard and synthesized copy shortcuts.
+  *
+- * Every early exit after a non-empty backup must restore the user's clipboard.
++ * Only a verified, unchanged temporary text copy may replace the backup.
+  */
+ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo)
+ {
      if (!hwnd || IsStopping())
          return false;
  
@@ -195,7 +214,7 @@ index 1bae811..df32598 100644
      // Clipboard extraction is one indivisible save/copy/read/restore transaction.
      std::unique_lock<std::mutex> clipboardLock(g_clipboard_mutex, std::defer_lock);
      if (clipboardLockMode_ == ClipboardLockMode::TryOnly)
-@@ -721,7 +732,12 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+@@ -721,7 +743,12 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
              // A sequence change since mouse-down means the application/user already
              // copied the selection; read it directly without injecting another key.
              if (GetClipboardSequenceNumber() != clipboardSequence_)
@@ -208,82 +227,115 @@ index 1bae811..df32598 100644
  
              const bool ctrlPressing = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
              const bool cPressing = (GetAsyncKeyState('C') & 0x8000) != 0;
-@@ -748,6 +764,10 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+@@ -748,22 +775,22 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
  
      // Preserve every backupable clipboard format, not only text. A fallback must be
      // transparent to users who have copied files, images, or rich content.
+-    ClipboardBackup clipboardBackup;
+-    if (!OpenClipboard(nullptr))
 +    const DWORD beforeHistory = GetClipboardSequenceNumber();
 +    glint::ClipboardHistoryCapture history;
 +    if (GetClipboardSequenceNumber() != beforeHistory || !sourceIsFocused())
 +        return false;
-     ClipboardBackup clipboardBackup;
-     if (!OpenClipboard(nullptr))
++    glint::ClipboardCapture capture;
++    if (!capture.Begin(beforeHistory))
          return false;
-@@ -764,6 +784,21 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
-             // so the next gesture does not mistake our restore for a user's copy.
-             clipboardSequence_ = GetClipboardSequenceNumber();
-         }
-+        else if (OpenClipboard(nullptr))
-+        {
-+            // Restore an originally empty clipboard as well.
-+            EmptyClipboard();
-+            CloseClipboard();
-+            clipboardSequence_ = GetClipboardSequenceNumber();
-+        }
-+    };
-+
+-    BackupClipboard(clipboardBackup, true);
+-    EmptyClipboard();
+-    CloseClipboard();
+ 
+-    const auto restoreBackup = [&]()
+-    {
+-        if (clipboardBackup.HasData())
+-        {
+-            RestoreClipboard(clipboardBackup);
+-            // Restoration itself changes the sequence number. Publish this final value
+-            // so the next gesture does not mistake our restore for a user's copy.
+-            clipboardSequence_ = GetClipboardSequenceNumber();
+-        }
 +    const auto finishCopy = [&](bool readSuccess) {
 +        if (readSuccess && sourceIsFocused() && !ShouldKeyInterruptViaClipboard())
 +            history.ObserveCopy(hwnd, selectionInfo.text);
-+        restoreBackup();
-+        selectionInfo.historyCleanup = static_cast<int>(history.Finish(clipboardSequence_));
-+        return sourceIsFocused() && readSuccess && !selectionInfo.text.empty();
++        const bool restored = capture.Restore();
++        clipboardSequence_ = GetClipboardSequenceNumber();
++        if (restored)
++            selectionInfo.historyCleanup = static_cast<int>(history.Finish(clipboardSequence_));
++        return restored && sourceIsFocused() && readSuccess && !selectionInfo.text.empty();
      };
  
      // Delay-list applications skip Ctrl+Insert and need extra settling time after Ctrl+C.
-@@ -771,7 +806,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+@@ -771,9 +798,8 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
                             IsInFilterList(selectionInfo.programName, config_->includeClipboardDelayRead);
      if (!delayRead)
      {
 -        if (IsStopping() || ShouldKeyInterruptViaClipboard())
-+        if (IsStopping() || !sourceIsFocused() || ShouldKeyInterruptViaClipboard())
++        if (IsStopping() || !sourceIsFocused() || ShouldKeyInterruptViaClipboard() || !capture.Unchanged())
          {
-             restoreBackup();
+-            restoreBackup();
              return false;
-@@ -803,12 +838,11 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+         }
+ 
+@@ -799,18 +825,15 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+         {
+             if (!SleepInterruptibly(10))
+             {
+-                restoreBackup();
                  return false;
              }
-             const bool readSuccess = ReadClipboard(selectionInfo.text);
+-            const bool readSuccess = ReadClipboard(selectionInfo.text);
 -            restoreBackup();
 -            return readSuccess && !selectionInfo.text.empty();
++            const bool readSuccess = sourceIsFocused() && !ShouldKeyInterruptViaClipboard() && capture.Read(hwnd, selectionInfo.text);
 +            return finishCopy(readSuccess);
          }
      }
  
 -    if (IsStopping() || ShouldKeyInterruptViaClipboard())
-+    if (IsStopping() || !sourceIsFocused() || ShouldKeyInterruptViaClipboard())
++    if (IsStopping() || !sourceIsFocused() || ShouldKeyInterruptViaClipboard() || !capture.Unchanged())
      {
-         restoreBackup();
+-        restoreBackup();
          return false;
-@@ -851,8 +885,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
      }
  
-     const bool readSuccess = ReadClipboard(selectionInfo.text);
+@@ -833,7 +856,6 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+     SetStage(RetrievalStage::Clipboard);
+     if (!hasNewContent || IsStopping())
+     {
+-        restoreBackup();
+         return false;
+     }
+ 
+@@ -841,18 +863,15 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
+     // change. Adobe Acrobat is the original reason for the 135 ms delay list.
+     if (delayRead && !SleepInterruptibly(135))
+     {
+-        restoreBackup();
+         return false;
+     }
+     if (!SleepInterruptibly(10) || ShouldKeyInterruptViaClipboard())
+     {
+-        restoreBackup();
+         return false;
+     }
+ 
+-    const bool readSuccess = ReadClipboard(selectionInfo.text);
 -    restoreBackup();
 -    return readSuccess && !selectionInfo.text.empty();
++    const bool readSuccess = sourceIsFocused() && capture.Read(hwnd, selectionInfo.text);
 +    return finishCopy(readSuccess);
  }
  
  /** Inject Ctrl+Insert or Ctrl+C while respecting modifiers already held by the user. */
 diff --git a/binding.gyp b/binding.gyp
-index 05c0fc1..b367e9c 100644
+index 05c0fc1..f166198 100644
 --- a/binding.gyp
 +++ b/binding.gyp
-@@ -21,17 +21,20 @@
+@@ -21,17 +21,21 @@
              "src/windows/lib/string_pool.cc",
              "src/windows/lib/utils.cc",
              "src/windows/lib/clipboard.cc",
 +            "src/windows/lib/clipboard-history.cpp",
++            "src/windows/lib/clipboard-capture.cpp",
              "src/windows/lib/keyboard.cc"
            ],
            "libraries": [ 
@@ -302,7 +354,7 @@ index 05c0fc1..b367e9c 100644
            }
          }],
 diff --git a/src/windows/lib/clipboard.cc b/src/windows/lib/clipboard.cc
-index 085026f..e73394a 100644
+index 085026f..8d79747 100644
 --- a/src/windows/lib/clipboard.cc
 +++ b/src/windows/lib/clipboard.cc
 @@ -6,6 +6,7 @@
@@ -313,12 +365,47 @@ index 085026f..e73394a 100644
  
  #include <vector>
  
-@@ -281,6 +282,7 @@ bool RestoreClipboard(const ClipboardBackup &backup)
+@@ -233,15 +234,16 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
+  * CF_ENHMETAFILE is restored via SetEnhMetaFileBits.
+  * On SetClipboardData failure, the allocated handle is freed by us.
+  */
+-bool RestoreClipboard(const ClipboardBackup &backup)
++bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened)
+ {
+-    if (!backup.HasData())
+-        return true;  // Nothing to restore
+-
+-    if (!OpenClipboard(nullptr))
++    if (!isClipboardOpened && !OpenClipboard(nullptr))
+         return false;
+ 
+-    EmptyClipboard();
++    if (!EmptyClipboard())
++    {
++        if (!isClipboardOpened) CloseClipboard();
++        return false;
++    }
+ 
+     for (const auto &entry : backup.formats)
+     {
+@@ -281,6 +283,7 @@ bool RestoreClipboard(const ClipboardBackup &backup)
          // On success, system owns hData -- do NOT free
      }
  
-+    glint::ExcludeRestorationFromHistory();
-     CloseClipboard();
+-    CloseClipboard();
++    if (backup.HasData()) glint::ExcludeRestorationFromHistory();
++    if (!isClipboardOpened) CloseClipboard();
      return true;
- }
+-}
 \ No newline at end of file
++}
+diff --git a/src/windows/lib/clipboard.h b/src/windows/lib/clipboard.h
+index 9688afd..b2bf1fa 100644
+--- a/src/windows/lib/clipboard.h
++++ b/src/windows/lib/clipboard.h
+@@ -57,4 +57,4 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened = false);
+  * @param backup The backup to restore from
+  * @return true if successful, false on failure
+  */
+-bool RestoreClipboard(const ClipboardBackup &backup);
++bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened = false);

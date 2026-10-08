@@ -3,6 +3,7 @@ export interface Action { id: string; name: string; englishName: string; icon: s
 export interface Settings {
   version: 1;
   enabled: boolean;
+  dictionaryEnabled: boolean;
   trigger: 'automatic' | 'shortcut';
   shortcut: string;
   selectionMethod: 'accessibility' | 'clipboard' | 'auto';
@@ -40,13 +41,17 @@ export function validateActionNames(next: Settings, previous: Settings): void {
     if (saved && saved.englishName !== action.englishName) throw new Error('已保存动作的英文名称不可修改；显示名称可随时调整。');
   }
 }
-export interface ResultState { id: string; recorded: boolean; recordKind?: RecordKind; actionName: string; actionIcon: string; text: string; source: string; app: string; busy: boolean; error?: string; demo: boolean }
+export interface CustomDictionary { id: string; name: string; entries: number; enabled: boolean }
+export interface ToolbarLayout { token: number; width: number; height: number }
+export interface DictionaryEntry { word: string; phonetic: string; translation: string; forms: string; source: string }
+export interface ResultState { id: string; recorded: boolean; recordKind?: RecordKind; actionName: string; actionIcon: string; text: string; source: string; app: string; busy: boolean; error?: string; demo: boolean; dictionary?: DictionaryEntry }
 export type UIEvent = { type: 'snapshot'; snapshot: Snapshot } | { type: 'result'; result: ResultState } | { type: 'settings-window'; maximized: boolean } | { type: 'records-changed'; kind: RecordKind; deletedId?: string };
 export interface GlintAPI {
   snapshot(): Promise<Snapshot>;
   save(settings: Settings, keyUpdate?: string): Promise<{ ok: boolean; error?: string }>;
   demo(): Promise<void>;
-  fitToolbar(selectionId: number, width: number, height: number): Promise<void>;
+  fitToolbar(selectionId: number, width: number, height: number): Promise<ToolbarLayout | undefined>;
+  revealToolbar(selectionId: number, layout: number): Promise<void>;
   run(actionId: string, selectionId: number): Promise<{ ok: boolean; error?: string }>;
   openSettings(): Promise<void>;
   settingsWindow(action: 'minimize' | 'maximize' | 'close'): Promise<void>;
@@ -59,12 +64,15 @@ export interface GlintAPI {
   getRecord(kind: RecordKind, id: string): Promise<SavedRecord | undefined>;
   copyRecord(kind: RecordKind, id: string, field: 'original' | 'result'): Promise<boolean>;
   deleteRecord(kind: RecordKind, id: string): Promise<boolean>;
+  listDictionaries(): Promise<CustomDictionary[]>;
+  importDictionary(): Promise<{ ok: boolean; cancelled?: boolean; error?: string }>;
+  changeDictionary(id: string, action: 'enable' | 'disable' | 'up' | 'down' | 'remove'): Promise<void>;
   restart(): Promise<void>;
   quit(): Promise<void>;
   subscribe(callback: (event: UIEvent) => void): () => void;
 }
 export const defaults: Settings = {
-  version: 1, enabled: true, trigger: 'automatic', shortcut: 'CommandOrControl+Alt+G',
+  version: 1, enabled: true, dictionaryEnabled: true, trigger: 'automatic', shortcut: 'CommandOrControl+Alt+G',
   selectionMethod: 'accessibility', excludedApps: ['WindowsTerminal.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe'],
   theme: 'system', accent: 'blue', density: 'comfortable',
   provider: { baseUrl: 'https://api.openai.com/v1', model: '' },
@@ -107,6 +115,7 @@ export function validateSettings(input: unknown): Settings {
   const s = input as Settings;
   const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
   if (s.version !== 1 || typeof s.enabled !== 'boolean') throw new Error('设置版本或开关无效。');
+  if (s.dictionaryEnabled !== undefined && typeof s.dictionaryEnabled !== 'boolean') throw new Error('词典开关无效。');
   if (!['accessibility', 'clipboard', 'auto'].includes(s.selectionMethod)) throw new Error('取词方式无效。');
   if (!['automatic', 'shortcut'].includes(s.trigger) || !['light', 'dark', 'system'].includes(s.theme) || !['blue', 'violet', 'teal', 'amber'].includes(s.accent) || !['comfortable', 'compact'].includes(s.density)) throw new Error('设置选项无效。');
   if (!text(s.shortcut, 80) || !s.shortcut.trim()) throw new Error('请填写快捷键。');
@@ -126,7 +135,7 @@ export function validateSettings(input: unknown): Settings {
   }
   if (!s.actions.some(a => a.enabled)) throw new Error('至少启用一个动作。');
   return {
-    version: 1, enabled: s.enabled, trigger: s.trigger, shortcut: s.shortcut.trim(), selectionMethod: s.selectionMethod,
+    version: 1, enabled: s.enabled, dictionaryEnabled: s.dictionaryEnabled ?? true, trigger: s.trigger, shortcut: s.shortcut.trim(), selectionMethod: s.selectionMethod,
     excludedApps: [...new Set(s.excludedApps.map(a => a.trim().toLowerCase()))], theme: s.theme, accent: s.accent, density: s.density,
     provider: { baseUrl: s.provider.baseUrl.trim().replace(/\/+$/, ''), model: s.provider.model.trim() },
     actions: s.actions.map(a => ({ id: a.id, name: a.name.trim(), englishName: a.englishName, icon: a.icon, kind: a.kind, prompt: a.prompt, enabled: a.enabled }))

@@ -4,11 +4,15 @@ copyright: Copyright © 2026 Glint contributors
 directories:
   output: release
 asar: true
+extraResources:
+  - from: dist/dictionary
+    to: dictionary
 npmRebuild: false
 files:
   - dist/main.cjs
   - dist/preload.cjs
   - dist/selection-host.cjs
+  - dist/dictionary-worker.cjs
   - dist/renderer.js
   - dist/index.html
   - dist/styles.css

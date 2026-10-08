@@ -4,6 +4,7 @@ import { existsSync, readFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { extractFile, listPackage } from '@electron/asar';
+import { writeDictionaryFixture } from './package-fixture.mjs';
 
 process.on('uncaughtException', error => {
   console.error(error);
@@ -15,8 +16,13 @@ process.on('uncaughtException', error => {
 });
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+for (const name of ['ecdict.sqlite', 'LICENSE', 'manifest.json']) {
+  assert.deepEqual(readFileSync(`release/win-unpacked/resources/dictionary/${name}`), readFileSync(`dist/dictionary/${name}`), `Packaged dictionary mismatch: ${name}`);
+}
 const archive = 'release/win-unpacked/resources/app.asar';
 const entries = listPackage(archive).map(name => name.replaceAll('\\', '/'));
+assert.deepEqual(extractFile(archive, 'dist/dictionary-worker.cjs'), readFileSync('dist/dictionary-worker.cjs'), 'Packaged MDX worker matches the build');
+assert.ok(!entries.some(name => name.startsWith('/node_modules/js-mdict/') || name.startsWith('/node_modules/lzo')), 'Only reviewed bundled parser code may ship');
 const main = extractFile(archive, 'dist/main.cjs').toString('utf8');
 assert.ok(!main.includes('Glint native selection fixture') && !main.includes('smoke_summary') && !main.includes('runSettingsSmoke'), 'Full test scenarios must not ship in the application');
 for (const name of ['/dist/main.cjs', '/dist/preload.cjs', '/dist/renderer.js', '/dist/brand/glint.ico', '/dist/licenses/selection-hook-LICENSE', '/dist/licenses/lucide-LICENSE', '/dist/licenses/LICENSES.chromium.html']) {
@@ -47,6 +53,7 @@ assert.equal(shortPath.status, 0, 'Could not resolve Windows short path');
 if (shortPath.stdout.includes('~')) executables.push(path.join(shortPath.stdout.trim(), 'Glint.exe'));
 for (const file of executables) {
   const folder = mkdtempSync(path.resolve('work', 'packaged-check-'));
+  await writeDictionaryFixture(folder);
   const env = { ...process.env, GLINT_SMOKE_ROOT: folder };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(path.resolve(file), ['--package-check'], { env, stdio: 'inherit', windowsHide: true });

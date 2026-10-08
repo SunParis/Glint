@@ -20,12 +20,15 @@ export function Result({ state }: { state?: ResultState }) {
       {state?.busy && !state.text && !state.error && <div id="result-loading" className="request-loading" role="status" aria-label="正在请求模型">
         <span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" />
       </div>}
-      <div id="answer" className="answer" aria-busy={state?.busy}>{state?.text}</div>
+      {state?.dictionary && <div className="dictionary-heading"><strong>{state.dictionary.word}</strong>
+        {state.dictionary.phonetic && <span>/{state.dictionary.phonetic}/</span>}<span className="subtle-badge">{state.dictionary.source}</span></div>}
+      <div id="answer" className="answer" aria-busy={state?.busy}>{state?.dictionary?.translation ?? state?.text}</div>
+      {state?.dictionary?.forms && <p className="dictionary-forms">{state.dictionary.forms}</p>}
       {state?.error && <MessageBar intent="error" id="result-error"><MessageBarBody>{state.error}</MessageBarBody></MessageBar>}
     </div>
-    <footer className="result-footer"><span id="result-state" role="status">{state?.busy ? '正在生成' : state?.error ? '已停止' : '已完成'}</span><div>
+    <footer className="result-footer"><span id="result-state" role="status">{state?.busy ? '正在生成' : state?.error ? '已停止' : state?.dictionary ? '离线词典' : '已完成'}</span><div>
       <Button size="medium" id="result-stop" data-cancel disabled={!state?.busy} icon={<Icon name="stop" />} onClick={() => void perform(() => window.glint.cancel())}>停止</Button>
-      <Button size="medium" id="result-retry" data-retry-result disabled={!state || state.busy} icon={<Icon name="rotate-cw" />} onClick={() => void perform(() => window.glint.retryResult())}>重试</Button>
+      <Button size="medium" id="result-retry" data-retry-result disabled={!state || state.busy} icon={<Icon name={state?.dictionary ? 'sparkles' : 'rotate-cw'} />} onClick={() => void perform(() => window.glint.retryResult())}>{state?.dictionary ? 'AI 翻译' : '重试'}</Button>
       <Button size="medium" id="result-copy" className="secondary" data-copy-result disabled={!state?.text} icon={<Icon name="copy" />} onClick={() => void perform(async () => { if (await window.glint.copyResult()) toast('已复制'); })}>复制</Button>
       {state?.recordKind && <Button appearance="primary" size="medium" id="result-record" className="primary" data-record-source
         disabled={recording || state.recorded || state.busy || !state.text.trim() || !state.source.trim()} icon={<Icon name={state.recorded ? 'bookmark-check' : 'bookmark'} />}

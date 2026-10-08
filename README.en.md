@@ -10,7 +10,7 @@ Glint is a customizable text selection assistant for Windows and Linux. Translat
 
 [Download Glint](https://github.com/yshsharke/Glint/releases) · [Report an issue](https://github.com/yshsharke/Glint/issues) · [Changelog](CHANGELOG.md)
 
-<img src="docs/assets/toolbar.png" width="419" alt="Glint selection toolbar with Settings, Translate, Explain, Polish, Search and Copy">
+<img src="docs/assets/toolbar.png" width="419" alt="Glint selection toolbar preview with Settings and common actions">
 
 Select text to bring everyday actions within reach. The screenshots below preview the 0.2.0 interface; see Releases for available downloads.
 
@@ -33,7 +33,11 @@ Linux x64 is available as a source-build preview on X11 and compatible Wayland d
 
 ## Get started
 
-1. Open **模型 (Model)**, enter your provider's API URL, model name and API key, then click **保存设置 (Save settings)**. Glint supports OpenAI-compatible APIs and local model services. It does not include a model subscription or API credits.
+**English word lookup works without an API key.** Translate uses a compact offline ECDICT dataset for meanings, phonetics and inflections. Unknown words and sentences use your configured model. Choose **AI 翻译 (AI translation)** on a dictionary card to use your current translation prompt, or disable **单词优先查词典 (Prefer dictionary for words)** in **词典 (Dictionary)** settings. Dictionary results can be copied and saved. This applies only to the built-in Translate action; Polish, Explain and custom actions are unchanged.
+
+**Bring your own dictionary:** Unzip your downloaded dictionary, open **词典 (Dictionary)** and choose **导入 MDX (Import MDX)**. Enable, reorder or remove imported dictionaries; enabled ones are searched in order before ECDICT. Text definitions from MDX 1.x / 2.x are supported. Password-protected files, MDX 3, MDD images/audio and original dictionary styling are not supported yet. Glint keeps a local copy, so the original download can be moved; removing a dictionary leaves the original untouched.
+
+1. Open Glint. For sentence translation, polishing and other AI features, open **模型 (Model)**, enter your provider's API URL, model name and API key, then click **保存设置 (Save settings)**. Glint supports OpenAI-compatible APIs and local model services. It does not include a model subscription or API credits.
 2. Select text in another application to show the toolbar, or press **Ctrl + Alt + G** to capture the current selection. Wayland defaults to shortcut mode and may ask you to authorize the shortcut.
 3. Choose **翻译 (Translate)** or **润色 (Polish)** to open a result card. Search works without a model connection.
 
